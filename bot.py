@@ -73,24 +73,32 @@ async def scheduled_job(bot):
     await run_and_send(bot, CHAT_ID)
 
 
+async def post_init(application: Application):
+    """Khởi động scheduler SAU KHI event loop đã chạy"""
+    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+    scheduler.add_job(scheduled_job, "cron", hour=8, minute=0, args=[application.bot])
+    scheduler.add_job(scheduled_job, "cron", hour=20, minute=0, args=[application.bot])
+    scheduler.start()
+    logger.info("Scheduler started: 08:00 and 20:00 GMT+7")
+
+
 def main():
     if not BOT_TOKEN or not CHAT_ID:
         raise ValueError("Thiếu BOT_TOKEN hoặc CHAT_ID trong environment variables!")
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
     # Register commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("funding", funding_command))
 
-    # Scheduler: 8:00 sáng và 8:00 tối GMT+7
-    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-    scheduler.add_job(scheduled_job, "cron", hour=8, minute=0, args=[app.bot])
-    scheduler.add_job(scheduled_job, "cron", hour=20, minute=0, args=[app.bot])
-    scheduler.start()
-
-    logger.info("Bot started. Scheduler running at 08:00 and 20:00 GMT+7.")
+    logger.info("Bot starting...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
