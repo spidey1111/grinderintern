@@ -4,12 +4,14 @@ import logging
 from datetime import datetime
 from bs4 import BeautifulSoup
 import re
+import time
 
 logger = logging.getLogger(__name__)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/json, text/html, */*",
+    "Referer": "https://www.coincarp.com/",
 }
 
 TIER1_VCS = [
@@ -26,7 +28,7 @@ TIER2_VCS = [
     "digital currency group"
 ]
 
-ALLOWED_ROUNDS = ["seed", "pre-seed", "preseed", "ico", "ido", "ieo", "private sale", "strategic"]
+ALLOWED_ROUNDS = ["seed", "pre-seed", "preseed", "ico", "ido", "ieo", "private sale", "strategic", "private"]
 
 
 def is_allowed_round(round_str: str) -> bool:
@@ -34,6 +36,8 @@ def is_allowed_round(round_str: str) -> bool:
         return True
     r = round_str.lower()
     if re.search(r'series\s+[a-z]', r):
+        return False
+    if "grant" in r:
         return False
     return any(x in r for x in ALLOWED_ROUNDS)
 
@@ -52,106 +56,170 @@ def score_vc_tier(investors_str: str) -> int:
     return min(score, 5)
 
 
-async def fetch_rootdata(client: httpx.AsyncClient) -> list[dict]:
+async def fetch_coincarp(client: httpx.AsyncClient) -> list[dict]:
+    """Fetch funding rounds từ CoinCarp public API"""
     deals = []
     try:
-        url = "https://www.rootdata.com/api/funding/list"
-        params = {"page": 1, "size": 30}
-        r = await client.get(url, params=params, headers=HEADERS, timeout=15)
+        url = "https://sapi.coincarp.com/api/v1/market/fundraising/list"
+        params = {
+            "lang": "en-US",
+            "draw": "1",
+            "columns[0][data]": "projectname",
+            "columns[0][searchable]": "true",
+            "columns[0][orderable]": "false",
+            "columns[0][search][value]": "",
+            "columns[0][search][regex]": "false",
+            "columns[1][data]": "categorylist",
+            "columns[1][searchable]": "true",
+            "columns[1][orderable]": "false",
+            "columns[1][search][value]": "",
+            "columns[1][search][regex]": "false",
+            "columns[2][data]": "fundstagename",
+            "columns[2][searchable]": "true",
+            "columns[2][orderable]": "false",
+            "columns[2][search][value]": "",
+            "columns[2][search][regex]": "false",
+            "columns[3][data]": "fundamount",
+            "columns[3][searchable]": "true",
+            "columns[3][orderable]": "true",
+            "columns[3][search][value]": "",
+            "columns[3][search][regex]": "false",
+            "columns[4][data]": "investorlist",
+            "columns[4][searchable]": "true",
+            "columns[4][orderable]": "false",
+            "columns[4][search][value]": "",
+            "columns[4][search][regex]": "false",
+            "columns[5][data]": "funddate",
+            "columns[5][searchable]": "true",
+            "columns[5][orderable]": "true",
+            "columns[5][search][value]": "",
+            "columns[5][search][regex]": "false",
+            "order[0][column]": "5",
+            "order[0][dir]": "desc",
+            "start": "0",
+            "length": "30",
+            "search[value]": "",
+            "search[regex]": "false",
+            "_": str(int(time.time() * 1000)),
+        }
+
+        r = await client.get(url, params=params, headers=HEADERS, timeout=20)
+        logger.info(f"CoinCarp status: {r.status_code}")
+
         if r.status_code == 200:
             data = r.json()
-            items = data.get("data", {}).get("list", [])
+            items = data.get("data", [])
+            logger.info(f"CoinCarp items: {len(items)}")
+
             for item in items:
-                round_type = item.get("roundType", "")
+                round_type = item.get("fundstagename", "") or ""
                 if not is_allowed_round(round_type):
                     continue
+
+                # Parse investors
+                investor_list = item.get("investorlist", []) or []
+                if isinstance(investor_list, list):
+                    investors_str = ", ".join([
+                        inv.get("name", "") if isinstance(inv, dict) else str(inv)
+                        for inv in investor_list
+                    ])
+                else:
+                    investors_str = str(investor_list)
+
+                # Parse categories
+                category_list = item.get("categorylist", []) or []
+                if isinstance(category_list, list):
+                    sector = ", ".join([
+                        cat.get("name", "") if isinstance(cat, dict) else str(cat)
+                        for cat in category_list
+                    ])
+                else:
+                    sector = str(category_list)
+
+                # Parse amount
+                amount_raw = item.get("fundamount", "") or ""
+                if amount_raw and str(amount_raw) != "0":
+                    try:
+                        amt = float(str(amount_raw).replace(",", ""))
+                        if amt >= 1_000_000:
+                            amount_str = f"${amt/1_000_000:.1f}M"
+                        else:
+                            amount_str = f"${amt:,.0f}"
+                    except Exception:
+                        amount_str = str(amount_raw)
+                else:
+                    amount_str = "Chưa công bố"
+
+                # Parse date
+                fund_date = item.get("funddate", "") or ""
+
+                # Project info
+                project_code = item.get("projectcode", "") or ""
+                project_name = item.get("projectname", "") or ""
+                website = item.get("website", "") or ""
+                twitter = item.get("twitterurl", "") or item.get("twitter", "") or ""
+                discord = item.get("discordurl", "") or item.get("discord", "") or ""
+                description = item.get("description", "") or item.get("projectdesc", "") or ""
+
+                # Build coincarp project URL for detail fetch
+                coincarp_url = f"https://www.coincarp.com/currencies/{project_code}/" if project_code else ""
+
                 deals.append({
-                    "source": "RootData",
-                    "name": item.get("projectName", ""),
-                    "amount": item.get("amount", ""),
+                    "source": "CoinCarp",
+                    "name": project_name,
+                    "amount": amount_str,
                     "round": round_type,
-                    "investors": item.get("investors", ""),
-                    "date": item.get("date", ""),
-                    "sector": item.get("category", ""),
-                    "description": item.get("description", ""),
-                    "website": item.get("website", ""),
-                    "twitter": item.get("twitter", ""),
-                    "discord": item.get("discord", ""),
-                    "token_status": item.get("tokenStatus", ""),
+                    "investors": investors_str or "Chưa công bố",
+                    "date": fund_date,
+                    "sector": sector,
+                    "description": description,
+                    "website": website,
+                    "twitter": twitter,
+                    "discord": discord,
+                    "token_status": item.get("tokentype", "") or "",
                     "campaigns": [],
+                    "coincarp_url": coincarp_url,
+                    "project_code": project_code,
                 })
+
     except Exception as e:
-        logger.warning(f"RootData fetch error: {e}")
+        logger.warning(f"CoinCarp fetch error: {e}")
     return deals
 
 
-async def fetch_cryptorank(client: httpx.AsyncClient) -> list[dict]:
-    deals = []
-    try:
-        url = "https://cryptorank.io/funding-rounds"
-        r = await client.get(url, headers=HEADERS, timeout=15)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.text, "html.parser")
-            rows = soup.select("table tbody tr")
-            for row in rows[:25]:
-                cols = row.select("td")
-                if len(cols) >= 5:
-                    round_type = cols[1].get_text(strip=True)
-                    if not is_allowed_round(round_type):
-                        continue
-                    link_tag = row.select_one("a[href]")
-                    project_url = ""
-                    if link_tag and "/currencies" in link_tag.get("href", ""):
-                        project_url = f"https://cryptorank.io{link_tag['href']}"
-                    deals.append({
-                        "source": "Cryptorank",
-                        "name": cols[0].get_text(strip=True),
-                        "amount": cols[2].get_text(strip=True),
-                        "round": round_type,
-                        "investors": cols[3].get_text(strip=True) if len(cols) > 3 else "",
-                        "date": cols[4].get_text(strip=True) if len(cols) > 4 else "",
-                        "sector": "",
-                        "description": "",
-                        "website": "",
-                        "twitter": "",
-                        "discord": "",
-                        "token_status": "",
-                        "campaigns": [],
-                        "cryptorank_url": project_url,
-                    })
-    except Exception as e:
-        logger.warning(f"Cryptorank fetch error: {e}")
-    return deals
-
-
-async def fetch_cryptorank_detail(client: httpx.AsyncClient, deal: dict) -> dict:
-    url = deal.get("cryptorank_url", "")
-    if not url:
+async def fetch_coincarp_detail(client: httpx.AsyncClient, deal: dict) -> dict:
+    """Fetch thêm website, twitter, discord từ trang chi tiết CoinCarp"""
+    url = deal.get("coincarp_url", "")
+    if not url or (deal.get("website") and deal.get("twitter")):
         return deal
     try:
         r = await client.get(url, headers=HEADERS, timeout=15)
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
-            tags = soup.select("[class*='tag'], [class*='category'], [class*='badge']")
-            if tags:
-                deal["sector"] = ", ".join([t.get_text(strip=True) for t in tags[:3]])
-            desc_tag = soup.select_one("[class*='description'], [class*='about']")
-            if desc_tag:
-                deal["description"] = desc_tag.get_text(strip=True)[:400]
             for a in soup.select("a[href]"):
                 href = a.get("href", "")
                 if ("twitter.com" in href or "x.com" in href) and not deal.get("twitter"):
                     deal["twitter"] = href
                 elif "discord" in href and not deal.get("discord"):
                     deal["discord"] = href
-                elif not deal.get("website") and href.startswith("http") and "cryptorank" not in href and "twitter" not in href and "discord" not in href:
+                elif (href.startswith("http") and
+                      "coincarp" not in href and
+                      "twitter" not in href and
+                      "discord" not in href and
+                      "t.me" not in href and
+                      not deal.get("website")):
                     deal["website"] = href
+            if not deal.get("description"):
+                desc = soup.select_one("[class*='description'], [class*='about'], .project-desc")
+                if desc:
+                    deal["description"] = desc.get_text(strip=True)[:400]
     except Exception as e:
-        logger.warning(f"Cryptorank detail error for {deal.get('name')}: {e}")
+        logger.warning(f"CoinCarp detail error for {deal.get('name')}: {e}")
     return deal
 
 
 async def fetch_project_campaigns(client: httpx.AsyncClient, deal: dict) -> dict:
+    """Fetch campaign info từ website + Twitter/Nitter"""
     campaigns = []
     name = deal.get("name", "")
     campaign_keywords = {
@@ -189,12 +257,14 @@ async def fetch_project_campaigns(client: httpx.AsyncClient, deal: dict) -> dict
             try:
                 r = await client.get(f"{nitter_host}/{handle}", headers=HEADERS, timeout=10)
                 if r.status_code == 200:
-                    soup = BeautifulSoup(r.text, "html.parser")
-                    tweet_text = " ".join([t.get_text(strip=True) for t in soup.select(".tweet-content")[:10]]).lower()
+                    tweet_text = " ".join([
+                        t.get_text(strip=True)
+                        for t in BeautifulSoup(r.text, "html.parser").select(".tweet-content")[:10]
+                    ]).lower()
                     for kw, label in campaign_keywords.items():
-                        twitter_label = label + " (Twitter)"
-                        if kw in tweet_text and twitter_label not in campaigns and label not in campaigns:
-                            campaigns.append(twitter_label)
+                        tw_label = label + " (Twitter)"
+                        if kw in tweet_text and tw_label not in campaigns and label not in campaigns:
+                            campaigns.append(tw_label)
                     break
             except Exception:
                 continue
@@ -219,25 +289,25 @@ def deduplicate(deals: list[dict]) -> list[dict]:
 
 async def fetch_funding_news() -> list[dict]:
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        results = await asyncio.gather(
-            fetch_rootdata(client),
-            fetch_cryptorank(client),
-            return_exceptions=True
-        )
-        all_deals = []
-        for result in results:
-            if isinstance(result, list):
-                all_deals.extend(result)
+        # Bước 1: Fetch danh sách từ CoinCarp
+        all_deals = await fetch_coincarp(client)
         all_deals = deduplicate(all_deals)
         logger.info(f"After dedup: {len(all_deals)} deals")
 
-        # Fetch Cryptorank detail pages
-        cr_tasks = [fetch_cryptorank_detail(client, d) for d in all_deals if d.get("cryptorank_url")]
-        if cr_tasks:
-            await asyncio.gather(*cr_tasks, return_exceptions=True)
+        if not all_deals:
+            logger.warning("No deals found from CoinCarp")
+            return []
 
-        # Fetch campaigns
-        await asyncio.gather(*[fetch_project_campaigns(client, d) for d in all_deals], return_exceptions=True)
+        # Bước 2: Fetch detail page để lấy social links còn thiếu
+        detail_tasks = [fetch_coincarp_detail(client, d) for d in all_deals if d.get("coincarp_url")]
+        if detail_tasks:
+            await asyncio.gather(*detail_tasks, return_exceptions=True)
 
-    logger.info(f"Done. Total: {len(all_deals)}")
+        # Bước 3: Fetch campaigns từ website + Twitter
+        await asyncio.gather(
+            *[fetch_project_campaigns(client, d) for d in all_deals],
+            return_exceptions=True
+        )
+
+    logger.info(f"Done. Total deals: {len(all_deals)}")
     return all_deals
