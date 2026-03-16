@@ -10,7 +10,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from scraper import fetch_funding_news
-from formatter import format_report, format_farm_checklist
+from formatter import format_report, format_farm_checklist, format_header, format_single_deal_text, has_real_campaigns
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -57,31 +57,40 @@ async def run_and_send(bot, chat_id):
 
         _deals_cache = deals
 
-        # Gửi header report
-        report = format_report(deals)
-        chunk_size = 4000
-        for i in range(0, len(report), chunk_size):
-            await bot.send_message(
-                chat_id=chat_id,
-                text=report[i:i+chunk_size],
-                parse_mode="Markdown",
-                disable_web_page_preview=True
-            )
+        # Gửi từng dự án riêng với inline button đính kèm
+        header = format_header(deals)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=header,
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
 
-        # Gửi inline buttons cho từng dự án
         for idx, deal in enumerate(deals):
-            name = deal.get("name", f"Dự án {idx+1}")
-            priority = "🔴" if "High" in str(deal.get("_priority", "")) else ""
-            keyboard = [[InlineKeyboardButton(
-                f"📋 Checklist farm — {name}",
-                callback_data=json.dumps({"action": "farm", "idx": idx})
-            )]]
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"_{name}_",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="Markdown"
-            )
+            deal_text = format_single_deal_text(idx + 1, deal)
+            if len(deal_text) > 4000:
+                deal_text = deal_text[:3990] + "..."
+
+            # Chỉ hiện nút checklist nếu có campaign thật
+            if has_real_campaigns(deal):
+                keyboard = [[InlineKeyboardButton(
+                    f"📋 Checklist farm",
+                    callback_data=json.dumps({"action": "farm", "idx": idx})
+                )]]
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=deal_text,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True
+                )
+            else:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=deal_text,
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True
+                )
 
     except Exception as e:
         logger.error(f"Error in run_and_send: {e}")
