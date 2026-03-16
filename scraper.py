@@ -1,10 +1,10 @@
 import httpx
 import asyncio
 import logging
-from datetime import datetime
 from bs4 import BeautifulSoup
 import re
 import time
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +56,41 @@ def score_vc_tier(investors_str: str) -> int:
     return min(score, 5)
 
 
+def parse_field_to_str(value) -> str:
+    """Parse bất kỳ kiểu dữ liệu nào thành string — xử lý str, list, dict"""
+    if not value:
+        return ""
+    if isinstance(value, str):
+        # Có thể là JSON string
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                parts = []
+                for item in parsed:
+                    if isinstance(item, dict):
+                        parts.append(item.get("name") or item.get("title") or str(item))
+                    else:
+                        parts.append(str(item))
+                return ", ".join(filter(None, parts))
+            elif isinstance(parsed, dict):
+                return parsed.get("name") or str(parsed)
+        except Exception:
+            pass
+        return value.strip()
+    elif isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, dict):
+                parts.append(item.get("name") or item.get("title") or str(item))
+            else:
+                parts.append(str(item))
+        return ", ".join(filter(None, parts))
+    elif isinstance(value, dict):
+        return value.get("name") or str(value)
+    return str(value)
+
+
 async def fetch_coincarp(client: httpx.AsyncClient) -> list[dict]:
-    """Fetch funding rounds từ CoinCarp public API"""
     deals = []
     try:
         url = "https://sapi.coincarp.com/api/v1/market/fundraising/list"
@@ -109,38 +142,31 @@ async def fetch_coincarp(client: httpx.AsyncClient) -> list[dict]:
         if r.status_code == 200:
             data = r.json()
             items = data.get("data", [])
-            logger.info(f"CoinCarp items: {len(items)}")
+            logger.info(f"CoinCarp raw items: {len(items)}")
+
+            # Log first item structure for debugging
+            if items:
+                logger.info(f"First item keys: {list(items[0].keys()) if isinstance(items[0], dict) else type(items[0])}")
+                logger.info(f"First item sample: {json.dumps(items[0], ensure_ascii=False)[:500]}")
 
             for item in items:
-                round_type = item.get("fundstagename", "") or ""
+                if not isinstance(item, dict):
+                    logger.warning(f"Unexpected item type: {type(item)}")
+                    continue
+
+                round_type = str(item.get("fundstagename") or "")
                 if not is_allowed_round(round_type):
                     continue
 
-                # Parse investors
-                investor_list = item.get("investorlist", []) or []
-                if isinstance(investor_list, list):
-                    investors_str = ", ".join([
-                        inv.get("name", "") if isinstance(inv, dict) else str(inv)
-                        for inv in investor_list
-                    ])
-                else:
-                    investors_str = str(investor_list)
-
-                # Parse categories
-                category_list = item.get("categorylist", []) or []
-                if isinstance(category_list, list):
-                    sector = ", ".join([
-                        cat.get("name", "") if isinstance(cat, dict) else str(cat)
-                        for cat in category_list
-                    ])
-                else:
-                    sector = str(category_list)
+                # Parse investors và categories với hàm robust
+                investors_str = parse_field_to_str(item.get("investorlist")) or "Chưa công bố"
+                sector = parse_field_to_str(item.get("categorylist")) or "N/A"
 
                 # Parse amount
-                amount_raw = item.get("fundamount", "") or ""
-                if amount_raw and str(amount_raw) != "0":
+                amount_raw = item.get("fundamount")
+                if amount_raw and str(amount_raw) not in ["0", "", "None"]:
                     try:
-                        amt = float(str(amount_raw).replace(",", ""))
+                        amt = float(str(amount_raw).replace(",", "").replace("$", ""))
                         if amt >= 1_000_000:
                             amount_str = f"${amt/1_000_000:.1f}M"
                         else:
@@ -150,18 +176,11 @@ async def fetch_coincarp(client: httpx.AsyncClient) -> list[dict]:
                 else:
                     amount_str = "Chưa công bố"
 
-                # Parse date
-                fund_date = item.get("funddate", "") or ""
+                project_code = str(item.get("projectcode") or item.get("code") or "")
+                project_name = str(item.get("projectname") or "")
+                if not project_name:
+                    continue
 
-                # Project info
-                project_code = item.get("projectcode", "") or ""
-                project_name = item.get("projectname", "") or ""
-                website = item.get("website", "") or ""
-                twitter = item.get("twitterurl", "") or item.get("twitter", "") or ""
-                discord = item.get("discordurl", "") or item.get("discord", "") or ""
-                description = item.get("description", "") or item.get("projectdesc", "") or ""
-
-                # Build coincarp project URL for detail fetch
                 coincarp_url = f"https://www.coincarp.com/currencies/{project_code}/" if project_code else ""
 
                 deals.append({
@@ -169,26 +188,26 @@ async def fetch_coincarp(client: httpx.AsyncClient) -> list[dict]:
                     "name": project_name,
                     "amount": amount_str,
                     "round": round_type,
-                    "investors": investors_str or "Chưa công bố",
-                    "date": fund_date,
+                    "investors": investors_str,
+                    "date": str(item.get("funddate") or ""),
                     "sector": sector,
-                    "description": description,
-                    "website": website,
-                    "twitter": twitter,
-                    "discord": discord,
-                    "token_status": item.get("tokentype", "") or "",
+                    "description": str(item.get("description") or item.get("projectdesc") or ""),
+                    "website": str(item.get("website") or ""),
+                    "twitter": str(item.get("twitterurl") or item.get("twitter") or ""),
+                    "discord": str(item.get("discordurl") or item.get("discord") or ""),
+                    "token_status": str(item.get("tokentype") or ""),
                     "campaigns": [],
                     "coincarp_url": coincarp_url,
-                    "project_code": project_code,
                 })
 
+        logger.info(f"CoinCarp parsed deals: {len(deals)}")
+
     except Exception as e:
-        logger.warning(f"CoinCarp fetch error: {e}")
+        logger.warning(f"CoinCarp fetch error: {e}", exc_info=True)
     return deals
 
 
 async def fetch_coincarp_detail(client: httpx.AsyncClient, deal: dict) -> dict:
-    """Fetch thêm website, twitter, discord từ trang chi tiết CoinCarp"""
     url = deal.get("coincarp_url", "")
     if not url or (deal.get("website") and deal.get("twitter")):
         return deal
@@ -200,13 +219,10 @@ async def fetch_coincarp_detail(client: httpx.AsyncClient, deal: dict) -> dict:
                 href = a.get("href", "")
                 if ("twitter.com" in href or "x.com" in href) and not deal.get("twitter"):
                     deal["twitter"] = href
-                elif "discord" in href and not deal.get("discord"):
+                elif "discord.gg" in href and not deal.get("discord"):
                     deal["discord"] = href
                 elif (href.startswith("http") and
-                      "coincarp" not in href and
-                      "twitter" not in href and
-                      "discord" not in href and
-                      "t.me" not in href and
+                      not any(x in href for x in ["coincarp", "twitter", "discord", "t.me", "telegram"]) and
                       not deal.get("website")):
                     deal["website"] = href
             if not deal.get("description"):
@@ -219,7 +235,6 @@ async def fetch_coincarp_detail(client: httpx.AsyncClient, deal: dict) -> dict:
 
 
 async def fetch_project_campaigns(client: httpx.AsyncClient, deal: dict) -> dict:
-    """Fetch campaign info từ website + Twitter/Nitter"""
     campaigns = []
     name = deal.get("name", "")
     campaign_keywords = {
@@ -236,9 +251,8 @@ async def fetch_project_campaigns(client: httpx.AsyncClient, deal: dict) -> dict
         "community round": "👥 Community round",
     }
 
-    # Fetch website
     website = deal.get("website", "")
-    if website:
+    if website and website.startswith("http"):
         try:
             r = await client.get(website, headers=HEADERS, timeout=10)
             if r.status_code == 200:
@@ -249,25 +263,25 @@ async def fetch_project_campaigns(client: httpx.AsyncClient, deal: dict) -> dict
         except Exception as e:
             logger.warning(f"Website fetch error for {name}: {e}")
 
-    # Fetch Twitter via Nitter
     twitter = deal.get("twitter", "")
     if twitter:
         handle = twitter.rstrip("/").split("/")[-1].lstrip("@")
-        for nitter_host in ["https://nitter.net", "https://nitter.privacydev.net"]:
-            try:
-                r = await client.get(f"{nitter_host}/{handle}", headers=HEADERS, timeout=10)
-                if r.status_code == 200:
-                    tweet_text = " ".join([
-                        t.get_text(strip=True)
-                        for t in BeautifulSoup(r.text, "html.parser").select(".tweet-content")[:10]
-                    ]).lower()
-                    for kw, label in campaign_keywords.items():
-                        tw_label = label + " (Twitter)"
-                        if kw in tweet_text and tw_label not in campaigns and label not in campaigns:
-                            campaigns.append(tw_label)
-                    break
-            except Exception:
-                continue
+        if handle and handle != "twitter.com" and handle != "x.com":
+            for nitter_host in ["https://nitter.net", "https://nitter.privacydev.net"]:
+                try:
+                    r = await client.get(f"{nitter_host}/{handle}", headers=HEADERS, timeout=10)
+                    if r.status_code == 200:
+                        tweet_text = " ".join([
+                            t.get_text(strip=True)
+                            for t in BeautifulSoup(r.text, "html.parser").select(".tweet-content")[:10]
+                        ]).lower()
+                        for kw, label in campaign_keywords.items():
+                            tw_label = label + " (Twitter)"
+                            if kw in tweet_text and tw_label not in campaigns and label not in campaigns:
+                                campaigns.append(tw_label)
+                        break
+                except Exception:
+                    continue
 
     if not campaigns:
         campaigns = ["⚪ Chưa tìm thấy campaign — theo dõi Twitter/Discord"]
@@ -289,7 +303,6 @@ def deduplicate(deals: list[dict]) -> list[dict]:
 
 async def fetch_funding_news() -> list[dict]:
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        # Bước 1: Fetch danh sách từ CoinCarp
         all_deals = await fetch_coincarp(client)
         all_deals = deduplicate(all_deals)
         logger.info(f"After dedup: {len(all_deals)} deals")
@@ -298,12 +311,10 @@ async def fetch_funding_news() -> list[dict]:
             logger.warning("No deals found from CoinCarp")
             return []
 
-        # Bước 2: Fetch detail page để lấy social links còn thiếu
         detail_tasks = [fetch_coincarp_detail(client, d) for d in all_deals if d.get("coincarp_url")]
         if detail_tasks:
             await asyncio.gather(*detail_tasks, return_exceptions=True)
 
-        # Bước 3: Fetch campaigns từ website + Twitter
         await asyncio.gather(
             *[fetch_project_campaigns(client, d) for d in all_deals],
             return_exceptions=True
