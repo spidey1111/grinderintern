@@ -136,6 +136,14 @@ def format_report(deals: list[dict]) -> str:
     return "\n".join(parts)
 
 
+def has_real_campaigns(deal: dict) -> bool:
+    """Kiểm tra dự án có campaign thật không"""
+    campaigns = deal.get("campaigns", [])
+    if not campaigns:
+        return False
+    return not (len(campaigns) == 1 and "⚪" in campaigns[0])
+
+
 def format_farm_checklist(deal: dict) -> str:
     """Format chi tiết checklist farm cho inline button callback"""
     name = deal.get("name", "N/A")
@@ -144,22 +152,20 @@ def format_farm_checklist(deal: dict) -> str:
     website = deal.get("website", "")
     discord = deal.get("discord", "")
 
+    # Không có campaign thật
+    if not has_real_campaigns(deal):
+        return None
+
     lines = [
         f"📋 *CHECKLIST FARM — {name}*",
         f"───────────────────",
         f"",
         f"*Campaigns phát hiện:*",
     ]
-
     for c in campaigns:
         lines.append(f"• {c}")
 
-    lines += [
-        f"",
-        f"*Hành động gợi ý:*",
-    ]
-
-    # Gợi ý cụ thể dựa trên campaigns
+    lines += [f"", f"*Hành động gợi ý:*"]
     campaign_text = " ".join(campaigns).lower()
 
     if "testnet" in campaign_text:
@@ -167,7 +173,7 @@ def format_farm_checklist(deal: dict) -> str:
             f"🧪 *Testnet:*",
             f"  → Vào app testnet, connect wallet",
             f"  → Thực hiện swap/bridge/deploy nhỏ",
-            f"  → Lặp lại mỗi tuần để tạo history",
+            f"  → Lặp lại mỗi tuần để tạo on-chain history",
         ]
     if "mainnet" in campaign_text:
         lines += [
@@ -213,20 +219,36 @@ def format_farm_checklist(deal: dict) -> str:
             f"  → Kiểm tra yêu cầu phần cứng",
             f"  → Xem xét chi phí vs phần thưởng",
         ]
+    if "incentive" in campaign_text:
+        lines += [
+            f"💰 *Incentive program:*",
+            f"  → Đọc điều kiện tham gia",
+            f"  → Track rewards thường xuyên",
+        ]
 
-    # Luôn có phần social
-    lines += [f"", f"*Social cơ bản:*"]
+    lines += [f"", f"*Social:*"]
     if twitter:
         tw = twitter if twitter.startswith("http") else f"https://x.com/{twitter.lstrip('@')}"
         lines.append(f"  → Follow & bật thông báo: {tw}")
     if discord:
         lines.append(f"  → Join Discord: {discord}")
     if website:
-        lines.append(f"  → Bookmark website: {website}")
+        lines.append(f"  → Website: {website}")
 
-    lines += [
-        f"",
-        f"⚠️ _DYOR — Tự verify thông tin trước khi farm_",
-    ]
-
+    lines += [f"", f"⚠️ _DYOR — Tự verify thông tin trước khi farm_"]
     return "\n".join(lines)
+
+
+def format_header(deals: list[dict]) -> str:
+    """Header report ngắn gọn"""
+    now = datetime.now(TIMEZONE).strftime("%d/%m/%Y %H:%M")
+    return (
+        f"📊 *BORING GRINDER — FUNDING REPORT*\n"
+        f"🕐 {now} GMT+7  |  {len(deals)} dự án\n"
+        f"───────────────────"
+    )
+
+
+def format_single_deal_text(i: int, deal: dict) -> str:
+    """Format 1 deal để gửi kèm inline button"""
+    return format_single_deal(i, deal)
