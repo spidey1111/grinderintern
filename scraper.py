@@ -141,13 +141,26 @@ async def fetch_coincarp(client: httpx.AsyncClient) -> list[dict]:
 
         if r.status_code == 200:
             data = r.json()
-            items = data.get("data", [])
+            raw = data.get("data", [])
+
+            # CoinCarp trả về dict với numeric keys hoặc list
+            if isinstance(raw, dict):
+                items = list(raw.values())
+            elif isinstance(raw, list):
+                items = raw
+            else:
+                items = []
+
             logger.info(f"CoinCarp raw items: {len(items)}")
 
-            # Log first item structure for debugging
+            # Log first item để debug cấu trúc
             if items:
-                logger.info(f"First item keys: {list(items[0].keys()) if isinstance(items[0], dict) else type(items[0])}")
-                logger.info(f"First item sample: {json.dumps(items[0], ensure_ascii=False)[:500]}")
+                first = items[0]
+                logger.info(f"First item type: {type(first).__name__}")
+                try:
+                    logger.info(f"First item: {json.dumps(first, ensure_ascii=False)[:500]}")
+                except Exception:
+                    logger.info(f"First item (raw): {str(first)[:300]}")
 
             for item in items:
                 if not isinstance(item, dict):
