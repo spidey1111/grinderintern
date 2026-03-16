@@ -141,69 +141,78 @@ async def fetch_coincarp(client: httpx.AsyncClient) -> list[dict]:
 
         if r.status_code == 200:
             response_json = r.json()
+            logger.info(f"CoinCarp top keys: {list(response_json.keys()) if isinstance(response_json, dict) else type(response_json).__name__}")
 
-            # Log toàn bộ top-level keys để debug
-            logger.info(f"CoinCarp response keys: {list(response_json.keys()) if isinstance(response_json, dict) else type(response_json).__name__}")
+            # data["data"] là list of dicts hoặc list của list
+            raw_data = response_json.get("data", [])
+            logger.info(f"raw_data type: {type(raw_data).__name__}, len: {len(raw_data) if hasattr(raw_data, '__len__') else 'N/A'}")
 
-            # CoinCarp response structure: {"data": [...], "recordsTotal": N, ...}
-            # Hoặc nested: {"data": {"data": [...], ...}}
-            raw = response_json
-            if isinstance(raw, dict):
-                # Thử lấy data.data trước
-                inner = raw.get("data", [])
-                if isinstance(inner, dict):
-                    items = inner.get("data", list(inner.values()))
-                elif isinstance(inner, list):
-                    items = inner
-                else:
-                    # Fallback: lấy tất cả values là list/dict
-                    items = [v for v in raw.values() if isinstance(v, (dict, list)) and v]
-                    if items and isinstance(items[0], list):
-                        items = items[0]
+            # Log raw_data để xem cấu trúc thật
+            try:
+                logger.info(f"raw_data sample: {json.dumps(raw_data, ensure_ascii=False)[:1000]}")
+            except Exception as e:
+                logger.info(f"raw_data sample error: {e}, raw: {str(raw_data)[:500]}")
+
+            # Parse tùy theo cấu trúc
+            if isinstance(raw_data, list):
+                items = raw_data
+            elif isinstance(raw_data, dict):
+                # Có thể là {"data": [...]} nested
+                inner = raw_data.get("data", [])
+                items = inner if isinstance(inner, list) else list(raw_data.values())
             else:
                 items = []
 
-            logger.info(f"CoinCarp items after parse: {len(items)}")
-
-            if items:
-                first = items[0]
-                logger.info(f"First item type: {type(first).__name__}")
-                try:
-                    logger.info(f"First item: {json.dumps(first, ensure_ascii=False)[:800]}")
-                except Exception:
-                    logger.info(f"First item (raw): {str(first)[:300]}")
+            logger.info(f"Items to process: {len(items)}")
 
             for item in items:
-                if not isinstance(item, dict):
-                    logger.warning(f"Unexpected item type: {type(item)}")
+                # Xử lý cả dict và list (array of arrays)
+                if isinstance(item, dict):
+                    round_type = str(item.get("fundstagename") or item.get("round") or "")
+                    investors_str = parse_field_to_str(item.get("investorlist") or item.get("investors")) or "Chưa công bố"
+                    sector = parse_field_to_str(item.get("categorylist") or item.get("category")) or "N/A"
+                    amount_raw = item.get("fundamount") or item.get("amount") or ""
+                    project_name = str(item.get("projectname") or item.get("name") or "")
+                    project_code = str(item.get("projectcode") or item.get("code") or "")
+                    fund_date = str(item.get("funddate") or item.get("date") or "")
+                    description = str(item.get("description") or item.get("projectdesc") or "")
+                    website = str(item.get("website") or "")
+                    twitter = str(item.get("twitterurl") or item.get("twitter") or "")
+                    discord = str(item.get("discordurl") or item.get("discord") or "")
+                    token_status = str(item.get("tokentype") or item.get("token") or "")
+                elif isinstance(item, list) and len(item) >= 5:
+                    # Array format: [projectname, categorylist, fundstagename, fundamount, investorlist, funddate, ...]
+                    project_name = str(item[0] or "")
+                    sector = parse_field_to_str(item[1]) or "N/A"
+                    round_type = str(item[2] or "")
+                    amount_raw = item[3] or ""
+                    investors_str = parse_field_to_str(item[4]) or "Chưa công bố"
+                    fund_date = str(item[5] if len(item) > 5 else "")
+                    project_code = str(item[6] if len(item) > 6 else "")
+                    description = str(item[7] if len(item) > 7 else "")
+                    website = str(item[8] if len(item) > 8 else "")
+                    twitter = str(item[9] if len(item) > 9 else "")
+                    discord = str(item[10] if len(item) > 10 else "")
+                    token_status = ""
+                else:
+                    logger.warning(f"Skipping item type {type(item).__name__}: {str(item)[:100]}")
                     continue
 
-                round_type = str(item.get("fundstagename") or "")
                 if not is_allowed_round(round_type):
                     continue
 
-                # Parse investors và categories với hàm robust
-                investors_str = parse_field_to_str(item.get("investorlist")) or "Chưa công bố"
-                sector = parse_field_to_str(item.get("categorylist")) or "N/A"
+                if not project_name:
+                    continue
 
                 # Parse amount
-                amount_raw = item.get("fundamount")
                 if amount_raw and str(amount_raw) not in ["0", "", "None"]:
                     try:
                         amt = float(str(amount_raw).replace(",", "").replace("$", ""))
-                        if amt >= 1_000_000:
-                            amount_str = f"${amt/1_000_000:.1f}M"
-                        else:
-                            amount_str = f"${amt:,.0f}"
+                        amount_str = f"${amt/1_000_000:.1f}M" if amt >= 1_000_000 else f"${amt:,.0f}"
                     except Exception:
                         amount_str = str(amount_raw)
                 else:
                     amount_str = "Chưa công bố"
-
-                project_code = str(item.get("projectcode") or item.get("code") or "")
-                project_name = str(item.get("projectname") or "")
-                if not project_name:
-                    continue
 
                 coincarp_url = f"https://www.coincarp.com/currencies/{project_code}/" if project_code else ""
 
@@ -213,13 +222,13 @@ async def fetch_coincarp(client: httpx.AsyncClient) -> list[dict]:
                     "amount": amount_str,
                     "round": round_type,
                     "investors": investors_str,
-                    "date": str(item.get("funddate") or ""),
+                    "date": fund_date,
                     "sector": sector,
-                    "description": str(item.get("description") or item.get("projectdesc") or ""),
-                    "website": str(item.get("website") or ""),
-                    "twitter": str(item.get("twitterurl") or item.get("twitter") or ""),
-                    "discord": str(item.get("discordurl") or item.get("discord") or ""),
-                    "token_status": str(item.get("tokentype") or ""),
+                    "description": description,
+                    "website": website,
+                    "twitter": twitter,
+                    "discord": discord,
+                    "token_status": token_status,
                     "campaigns": [],
                     "coincarp_url": coincarp_url,
                 })
