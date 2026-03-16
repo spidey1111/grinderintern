@@ -247,29 +247,30 @@ async def fetch_coincarp(client: httpx.AsyncClient) -> list[dict]:
 
 
 async def fetch_coincarp_detail(client: httpx.AsyncClient, deal: dict) -> dict:
-    url = deal.get("coincarp_url", "")
-    if not url or (deal.get("website") and deal.get("twitter")):
+    """Fetch social links + description từ CoinCarp project page"""
+    project_code = deal.get("project_code") or deal.get("coincarp_url", "").rstrip("/").split("/")[-1]
+    if not project_code:
         return deal
+
+    # Thử fetch JSON API của CoinCarp cho project detail
     try:
-        r = await client.get(url, headers=HEADERS, timeout=15)
+        api_url = f"https://sapi.coincarp.com/api/v1/market/coin/info?coincode={project_code}&lang=en-US"
+        r = await client.get(api_url, headers=HEADERS, timeout=15)
         if r.status_code == 200:
-            soup = BeautifulSoup(r.text, "html.parser")
-            for a in soup.select("a[href]"):
-                href = a.get("href", "")
-                if ("twitter.com" in href or "x.com" in href) and not deal.get("twitter"):
-                    deal["twitter"] = href
-                elif "discord.gg" in href and not deal.get("discord"):
-                    deal["discord"] = href
-                elif (href.startswith("http") and
-                      not any(x in href for x in ["coincarp", "twitter", "discord", "t.me", "telegram"]) and
-                      not deal.get("website")):
-                    deal["website"] = href
-            if not deal.get("description"):
-                desc = soup.select_one("[class*='description'], [class*='about'], .project-desc")
-                if desc:
-                    deal["description"] = desc.get_text(strip=True)[:400]
+            data = r.json()
+            info = data.get("data", {}) or {}
+            if isinstance(info, dict):
+                if not deal.get("description") and info.get("description"):
+                    deal["description"] = info["description"][:400]
+                if not deal.get("website") and info.get("officialwebsite"):
+                    deal["website"] = info["officialwebsite"]
+                if not deal.get("twitter") and info.get("twitterurl"):
+                    deal["twitter"] = info["twitterurl"]
+                if not deal.get("discord") and info.get("discordurl"):
+                    deal["discord"] = info["discordurl"]
+                logger.info(f"Detail fetched for {deal.get('name')}: website={deal.get('website')}, twitter={deal.get('twitter')}")
     except Exception as e:
-        logger.warning(f"CoinCarp detail error for {deal.get('name')}: {e}")
+        logger.warning(f"CoinCarp detail API error for {deal.get('name')}: {e}")
     return deal
 
 
