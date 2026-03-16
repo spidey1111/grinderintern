@@ -140,25 +140,36 @@ async def fetch_coincarp(client: httpx.AsyncClient) -> list[dict]:
         logger.info(f"CoinCarp status: {r.status_code}")
 
         if r.status_code == 200:
-            data = r.json()
-            raw = data.get("data", [])
+            response_json = r.json()
 
-            # CoinCarp trả về dict với numeric keys hoặc list
+            # Log toàn bộ top-level keys để debug
+            logger.info(f"CoinCarp response keys: {list(response_json.keys()) if isinstance(response_json, dict) else type(response_json).__name__}")
+
+            # CoinCarp response structure: {"data": [...], "recordsTotal": N, ...}
+            # Hoặc nested: {"data": {"data": [...], ...}}
+            raw = response_json
             if isinstance(raw, dict):
-                items = list(raw.values())
-            elif isinstance(raw, list):
-                items = raw
+                # Thử lấy data.data trước
+                inner = raw.get("data", [])
+                if isinstance(inner, dict):
+                    items = inner.get("data", list(inner.values()))
+                elif isinstance(inner, list):
+                    items = inner
+                else:
+                    # Fallback: lấy tất cả values là list/dict
+                    items = [v for v in raw.values() if isinstance(v, (dict, list)) and v]
+                    if items and isinstance(items[0], list):
+                        items = items[0]
             else:
                 items = []
 
-            logger.info(f"CoinCarp raw items: {len(items)}")
+            logger.info(f"CoinCarp items after parse: {len(items)}")
 
-            # Log first item để debug cấu trúc
             if items:
                 first = items[0]
                 logger.info(f"First item type: {type(first).__name__}")
                 try:
-                    logger.info(f"First item: {json.dumps(first, ensure_ascii=False)[:500]}")
+                    logger.info(f"First item: {json.dumps(first, ensure_ascii=False)[:800]}")
                 except Exception:
                     logger.info(f"First item (raw): {str(first)[:300]}")
 
