@@ -130,7 +130,7 @@ async def fetch_coincarp(client: httpx.AsyncClient) -> list[dict]:
             "order[0][column]": "5",
             "order[0][dir]": "desc",
             "start": "0",
-            "length": "30",
+            "length": "50",
             "search[value]": "",
             "search[regex]": "false",
             "_": str(int(time.time() * 1000)),
@@ -153,13 +153,11 @@ async def fetch_coincarp(client: httpx.AsyncClient) -> list[dict]:
             except Exception as e:
                 logger.info(f"raw_data sample error: {e}, raw: {str(raw_data)[:500]}")
 
-            # Parse tùy theo cấu trúc
-            if isinstance(raw_data, list):
+            # CoinCarp: data = {"page":1, "totalpages":N, "list": [...]}
+            if isinstance(raw_data, dict):
+                items = raw_data.get("list", [])
+            elif isinstance(raw_data, list):
                 items = raw_data
-            elif isinstance(raw_data, dict):
-                # Có thể là {"data": [...]} nested
-                inner = raw_data.get("data", [])
-                items = inner if isinstance(inner, list) else list(raw_data.values())
             else:
                 items = []
 
@@ -168,18 +166,26 @@ async def fetch_coincarp(client: httpx.AsyncClient) -> list[dict]:
             for item in items:
                 # Xử lý cả dict và list (array of arrays)
                 if isinstance(item, dict):
-                    round_type = str(item.get("fundstagename") or item.get("round") or "")
-                    investors_str = parse_field_to_str(item.get("investorlist") or item.get("investors")) or "Chưa công bố"
-                    sector = parse_field_to_str(item.get("categorylist") or item.get("category")) or "N/A"
-                    amount_raw = item.get("fundamount") or item.get("amount") or ""
-                    project_name = str(item.get("projectname") or item.get("name") or "")
-                    project_code = str(item.get("projectcode") or item.get("code") or "")
-                    fund_date = str(item.get("funddate") or item.get("date") or "")
+                    round_type = str(item.get("fundstagename") or "")
+                    # investornames là string "A,B,C", investorlist là list of dicts
+                    investors_raw = item.get("investornames") or item.get("investorlist") or ""
+                    investors_str = parse_field_to_str(investors_raw) if isinstance(investors_raw, (list, dict)) else str(investors_raw) if investors_raw else "Chưa công bố"
+                    sector = parse_field_to_str(item.get("categorylist")) or "N/A"
+                    amount_raw = item.get("fundamount") or ""
+                    project_name = str(item.get("projectname") or "")
+                    project_code = str(item.get("projectcode") or "")
+                    # funddate là Unix timestamp
+                    fund_date_raw = item.get("funddate") or ""
+                    if fund_date_raw and str(fund_date_raw).isdigit():
+                        from datetime import datetime
+                        fund_date = datetime.utcfromtimestamp(int(fund_date_raw)).strftime("%Y-%m-%d")
+                    else:
+                        fund_date = str(fund_date_raw)
                     description = str(item.get("description") or item.get("projectdesc") or "")
-                    website = str(item.get("website") or "")
+                    website = str(item.get("website") or item.get("officialwebsite") or "")
                     twitter = str(item.get("twitterurl") or item.get("twitter") or "")
                     discord = str(item.get("discordurl") or item.get("discord") or "")
-                    token_status = str(item.get("tokentype") or item.get("token") or "")
+                    token_status = str(item.get("coincode") or item.get("tokentype") or "")
                 elif isinstance(item, list) and len(item) >= 5:
                     # Array format: [projectname, categorylist, fundstagename, fundamount, investorlist, funddate, ...]
                     project_name = str(item[0] or "")
