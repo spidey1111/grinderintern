@@ -3,252 +3,146 @@ import pytz
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-# Import score_vc_tier từ scraper
-try:
-    from scraper import score_vc_tier, TIER1_VCS, TIER2_VCS
-except ImportError:
-    def score_vc_tier(s): return 0
+TIER1_VCS = [
+    "a16z", "andreessen horowitz", "paradigm", "sequoia", "binance labs",
+    "coinbase ventures", "polychain", "multicoin", "pantera", "dragonfly",
+    "framework ventures", "electric capital", "lightspeed", "tiger global",
+    "softbank", "delphi digital"
+]
+TIER2_VCS = [
+    "animoca", "spartan", "jump", "wintermute", "galaxy", "hashkey",
+    "okx ventures", "huobi ventures", "kucoin ventures", "mechanism",
+    "nascent", "variant", "1kx", "fabric ventures", "outlier ventures",
+    "blockchain capital", "dcg", "amber group", "sevenx"
+]
 
 
 def assess_farm_priority(deal: dict) -> str:
     score = 0
-    amount_str = str(deal.get("amount", "")).lower().replace(",", "").replace("$", "").strip()
     round_type = str(deal.get("round", "")).lower()
     token_status = str(deal.get("token_status", "")).lower()
-    investors = str(deal.get("investors", ""))
-    campaigns = deal.get("campaigns", [])
+    investors = str(deal.get("investors", "")).lower()
 
-    # Seed/Pre-seed chưa có token = tự động High
-    is_early_round = any(x in round_type for x in ["seed", "pre-seed", "preseed", "private"])
-    has_no_token = not token_status or "pre" in token_status or token_status in ["", "none", "null", "no"]
-    if is_early_round and has_no_token:
+    is_early = any(x in round_type for x in ["seed", "pre-seed", "preseed", "private"])
+    has_no_token = not token_status or token_status in ["", "none", "null"]
+    if is_early and has_no_token:
         score += 4
 
-    # Funding size
+    for vc in TIER1_VCS:
+        if vc in investors:
+            score += 3
+    for vc in TIER2_VCS:
+        if vc in investors:
+            score += 1
+    score = min(score, 9)
+
+    amount_str = str(deal.get("amount", "")).lower().replace("$", "").replace(",", "")
     try:
         if "m" in amount_str:
-            amount = float(amount_str.replace("m", "").strip())
-            if amount >= 20:
+            amt = float(amount_str.replace("m", "").strip())
+            if amt >= 20:
                 score += 2
-            elif amount >= 5:
+            elif amt >= 5:
                 score += 1
     except Exception:
         pass
 
-    # VC tier
-    vc_score = score_vc_tier(investors)
-    score += vc_score
-
-    # Active campaigns
-    if campaigns and "⚪" not in campaigns[0]:
-        score += 2
-
     if score >= 6:
-        return "🔴 High"
+        return "High"
     elif score >= 3:
-        return "🟡 Medium"
+        return "Medium"
     else:
-        return "🟢 Low"
+        return "Low"
 
 
-def format_social_links(deal: dict) -> str:
+def format_links(deal: dict) -> str:
     parts = []
     website = deal.get("website", "")
     twitter = deal.get("twitter", "")
     discord = deal.get("discord", "")
-
     if website:
-        parts.append(f"[🌐 Website]({website})")
+        parts.append(f"[Website]({website})")
     if twitter:
         tw = twitter if twitter.startswith("http") else f"https://x.com/{twitter.lstrip('@')}"
-        parts.append(f"[🐦 Twitter]({tw})")
+        parts.append(f"[X]({tw})")
     if discord:
-        parts.append(f"[💬 Discord]({discord})")
-
-    return " · ".join(parts) if parts else ""
-
-
-def format_token_status(deal: dict) -> str:
-    token = str(deal.get("token_status", "")).strip()
-    if not token or token.lower() in ["", "none", "null", "no"]:
-        return "Chưa có token"
-    return token
+        parts.append(f"[Discord]({discord})")
+    return " | ".join(parts) if parts else ""
 
 
 def format_single_deal(i: int, deal: dict) -> str:
     name = deal.get("name", "N/A")
-    amount = deal.get("amount", "") or "Chưa công bố"
-    round_type = deal.get("round", "") or ""
-    investors = deal.get("investors", "") or "Chưa công bố"
-    date = deal.get("date", "") or datetime.now(TIMEZONE).strftime("%Y-%m-%d")
-    sector = deal.get("sector", "") or "N/A"
-    description = deal.get("description", "") or "Chưa có mô tả."
-    campaigns = deal.get("campaigns", [])
-
+    amount = deal.get("amount", "N/A")
+    round_type = deal.get("round", "N/A")
+    investors = deal.get("investors", "N/A")
+    date = deal.get("date", "")
+    sector = deal.get("sector", "N/A")
+    description = deal.get("description", "")
     priority = assess_farm_priority(deal)
-    token_status = format_token_status(deal)
-    social_links = format_social_links(deal)
-
-    # Gọi vốn: gộp amount + round
-    funding_str = amount
-    if round_type:
-        funding_str = f"{amount} · {round_type}"
+    links = format_links(deal)
 
     lines = [
         f"───────────────────",
-        f"*#{i} — {name}*",
+        f"*{i}. {name}*",
     ]
-
-    if social_links:
-        lines.append(social_links)
-
+    if links:
+        lines.append(links)
     lines += [
         f"",
-        f"💰 *Gọi vốn:* {funding_str}",
-        f"🏦 *Quỹ đầu tư:* {investors}",
-        f"📅 *Ngày:* {date}",
-        f"🏷 *Lĩnh vực:* {sector}",
-        f"🪙 *Token:* {token_status}",
-        f"",
-        f"📝 *Mô tả:* {description[:250]}{'...' if len(description) > 250 else ''}",
-        f"",
-        f"🎯 *Farm priority:* {priority}",
-        f"",
-        f"*Campaigns đang chạy:*",
+        f"Goi von: {amount} | {round_type} | {date}",
+        f"Quy dau tu: {investors}",
+        f"Sector: {sector}",
+        f"Farm priority: {priority}",
     ]
+    if description:
+        lines += [f"", f"Mo ta: {description[:300]}{'...' if len(description) > 300 else ''}"]
 
-    for c in campaigns:
-        lines.append(f"  {c}")
-
-    return "\n".join(lines)
-
-
-def format_report(deals: list[dict]) -> str:
-    now = datetime.now(TIMEZONE).strftime("%d/%m/%Y %H:%M")
-    header = (
-        f"📊 *BORING GRINDER — FUNDING REPORT*\n"
-        f"🕐 {now} GMT+7  |  {len(deals)} dự án\n"
-    )
-    parts = [header]
-    for i, deal in enumerate(deals, 1):
-        parts.append(format_single_deal(i, deal))
-    parts.append("───────────────────")
-    return "\n".join(parts)
-
-
-def has_real_campaigns(deal: dict) -> bool:
-    """Kiểm tra dự án có campaign thật không"""
-    campaigns = deal.get("campaigns", [])
-    if not campaigns:
-        return False
-    return not (len(campaigns) == 1 and "⚪" in campaigns[0])
-
-
-def format_farm_checklist(deal: dict) -> str:
-    """Format chi tiết checklist farm cho inline button callback"""
-    name = deal.get("name", "N/A")
-    campaigns = deal.get("campaigns", [])
-    twitter = deal.get("twitter", "")
-    website = deal.get("website", "")
-    discord = deal.get("discord", "")
-
-    # Không có campaign thật
-    if not has_real_campaigns(deal):
-        return None
-
-    lines = [
-        f"📋 *CHECKLIST FARM — {name}*",
-        f"───────────────────",
-        f"",
-        f"*Campaigns phát hiện:*",
-    ]
-    for c in campaigns:
-        lines.append(f"• {c}")
-
-    lines += [f"", f"*Hành động gợi ý:*"]
-    campaign_text = " ".join(campaigns).lower()
-
-    if "testnet" in campaign_text:
-        lines += [
-            f"🧪 *Testnet:*",
-            f"  → Vào app testnet, connect wallet",
-            f"  → Thực hiện swap/bridge/deploy nhỏ",
-            f"  → Lặp lại mỗi tuần để tạo on-chain history",
-        ]
-    if "mainnet" in campaign_text:
-        lines += [
-            f"🌐 *Mainnet:*",
-            f"  → Dùng sản phẩm thật trên mainnet",
-            f"  → Tạo volume giao dịch đều đặn",
-            f"  → Càng sớm càng tốt trước TGE",
-        ]
-    if "waitlist" in campaign_text or "early access" in campaign_text:
-        lines += [
-            f"📝 *Waitlist/Early access:*",
-            f"  → Điền form đăng ký sớm",
-            f"  → Kết nối wallet nếu yêu cầu",
-        ]
-    if "airdrop" in campaign_text:
-        lines += [
-            f"🪂 *Airdrop:*",
-            f"  → Theo dõi thông báo chính thức",
-            f"  → Hoàn thành các task được liệt kê",
-        ]
-    if "points" in campaign_text or "rewards" in campaign_text:
-        lines += [
-            f"⭐ *Points/Rewards:*",
-            f"  → Tham gia sớm để tích điểm",
-            f"  → Check leaderboard thường xuyên",
-            f"  → Dùng app đều đặn để maximize points",
-        ]
-    if "quest" in campaign_text:
-        lines += [
-            f"🎯 *Quest/Task:*",
-            f"  → Vào Galxe/Zealy tìm campaign",
-            f"  → Hoàn thành social + on-chain tasks",
-        ]
-    if "ambassador" in campaign_text:
-        lines += [
-            f"🤝 *Ambassador:*",
-            f"  → Đọc kỹ yêu cầu trước khi apply",
-            f"  → Thường cần tạo content hoặc refer",
-        ]
-    if "node" in campaign_text:
-        lines += [
-            f"🖥 *Node:*",
-            f"  → Kiểm tra yêu cầu phần cứng",
-            f"  → Xem xét chi phí vs phần thưởng",
-        ]
-    if "incentive" in campaign_text:
-        lines += [
-            f"💰 *Incentive program:*",
-            f"  → Đọc điều kiện tham gia",
-            f"  → Track rewards thường xuyên",
-        ]
-
-    lines += [f"", f"*Social:*"]
-    if twitter:
-        tw = twitter if twitter.startswith("http") else f"https://x.com/{twitter.lstrip('@')}"
-        lines.append(f"  → Follow & bật thông báo: {tw}")
-    if discord:
-        lines.append(f"  → Join Discord: {discord}")
-    if website:
-        lines.append(f"  → Website: {website}")
-
-    lines += [f"", f"⚠️ _DYOR — Tự verify thông tin trước khi farm_"]
     return "\n".join(lines)
 
 
 def format_header(deals: list[dict]) -> str:
-    """Header report ngắn gọn"""
-    now = datetime.now(TIMEZONE).strftime("%d/%m/%Y %H:%M")
-    return (
-        f"📊 *BORING GRINDER — FUNDING REPORT*\n"
-        f"🕐 {now} GMT+7  |  {len(deals)} dự án\n"
-        f"───────────────────"
-    )
+    now = datetime.now(TIMEZONE).strftime("%d/%m/%Y")
+    return f"FUNDING REPORT {now}"
 
 
 def format_single_deal_text(i: int, deal: dict) -> str:
-    """Format 1 deal để gửi kèm inline button"""
     return format_single_deal(i, deal)
+
+
+def format_analysis_response(deal: dict, raw_text: str) -> str:
+    """Format phần phân tích chi tiết từ raw text đã fetch"""
+    name = deal.get("name", "N/A")
+    if not raw_text:
+        return f"Khong tim thay thong tin chinh thuc cho {name}. Vui long check website/X cua du an."
+
+    # Tóm tắt thông tin có sẵn thành phân tích
+    lines = [
+        f"PHAN TICH CHI TIET — {name}",
+        f"───────────────────",
+        f"",
+        f"Nguon: thong tin chinh thuc tu website + X cua du an",
+        f"",
+    ]
+
+    # Extract meaningful content from raw text
+    website_content = ""
+    twitter_content = ""
+
+    if "[Website" in raw_text:
+        parts = raw_text.split("[Twitter")
+        website_content = parts[0].replace("[Website", "").strip()
+        if len(parts) > 1:
+            twitter_content = parts[1].strip()
+    else:
+        website_content = raw_text
+
+    if website_content:
+        # Clean up and take first meaningful chunk
+        clean = " ".join(website_content.split())[:1500]
+        lines += [f"Tu website chinh thuc:", f"{clean}", f""]
+
+    if twitter_content:
+        clean_tw = " ".join(twitter_content.split())[:500]
+        lines += [f"Tu X (Twitter):", f"{clean_tw}", f""]
+
+    return "\n".join(lines)
