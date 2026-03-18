@@ -8,8 +8,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from scraper import fetch_funding_news, fetch_project_analysis
-from formatter import format_header, format_single_deal_text, format_analysis_response
+from scraper import fetch_funding_news, fetch_project_page_content
+from formatter import format_header, format_single_deal_text, format_analysis_text
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -18,29 +18,28 @@ TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Cache deals
 _deals_cache: list[dict] = []
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Boring Grinder Funding Bot\n\n"
-        "/funding — Fetch funding news ngay bay gio\n"
-        "/help — Huong dan su dung\n\n"
-        "Bot tu dong gui bao cao luc 8:00 sang va 8:00 toi GMT+7."
+        "/funding — Fetch danh sách funding mới nhất\n"
+        "/help — Hướng dẫn sử dụng\n\n"
+        "Bot tự động gửi báo cáo lúc 8:00 sáng và 8:00 tối GMT+7."
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Lenh co the dung:\n\n"
-        "/funding — Lay danh sach funding moi nhat\n\n"
-        "Bam 'Click de xem them' duoi moi du an de doc phan tich chi tiet."
+        "Lệnh có thể dùng:\n\n"
+        "/funding — Lấy danh sách funding mới nhất\n\n"
+        "Bấm 'Click để xem thêm' dưới mỗi dự án để đọc phân tích chi tiết."
     )
 
 
 async def funding_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Dang fetch du lieu, cho mot chut...")
+    await update.message.reply_text("Đang fetch dữ liệu, chờ một chút...")
     await run_and_send(context.bot, update.effective_chat.id)
 
 
@@ -49,23 +48,26 @@ async def run_and_send(bot, chat_id):
     try:
         deals = await fetch_funding_news()
         if not deals:
-            await bot.send_message(chat_id=chat_id, text="Khong tim thay du lieu funding moi. Thu lai sau.")
+            await bot.send_message(chat_id=chat_id, text="Không tìm thấy dữ liệu funding mới. Thử lại sau nhé.")
             return
 
         _deals_cache = deals
 
-        # Gửi header
-        header = format_header(deals)
-        await bot.send_message(chat_id=chat_id, text=header, parse_mode="Markdown")
+        # Header
+        await bot.send_message(
+            chat_id=chat_id,
+            text=format_header(deals),
+            parse_mode="Markdown"
+        )
 
-        # Gửi từng dự án kèm nút
+        # Từng dự án
         for idx, deal in enumerate(deals):
             text = format_single_deal_text(idx + 1, deal)
             if len(text) > 4000:
                 text = text[:3990] + "..."
 
             keyboard = [[InlineKeyboardButton(
-                "Click de xem them",
+                "Click để xem thêm",
                 callback_data=json.dumps({"action": "analysis", "idx": idx})
             )]]
             await bot.send_message(
@@ -77,8 +79,8 @@ async def run_and_send(bot, chat_id):
             )
 
     except Exception as e:
-        logger.error(f"Error in run_and_send: {e}", exc_info=True)
-        await bot.send_message(chat_id=chat_id, text=f"Loi: {str(e)}")
+        logger.error(f"run_and_send error: {e}", exc_info=True)
+        await bot.send_message(chat_id=chat_id, text=f"Lỗi: {str(e)}")
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -86,36 +88,36 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     try:
         data = json.loads(query.data)
-        if data.get("action") == "analysis":
-            idx = data.get("idx", 0)
-            if idx >= len(_deals_cache):
-                await query.message.reply_text("Du lieu het han. Dung /funding de fetch lai.")
-                return
+        if data.get("action") != "analysis":
+            return
 
-            deal = _deals_cache[idx]
-            await query.message.reply_text("Dang phan tich du an, cho 10-30 giay...")
+        idx = data.get("idx", 0)
+        if idx >= len(_deals_cache):
+            await query.message.reply_text("Dữ liệu đã hết hạn. Dùng /funding để fetch lại nhé.")
+            return
 
-            # Fetch and analyze
-            raw_text = await fetch_project_analysis(
-                project_code=deal.get("project_code", ""),
-                name=deal.get("name", ""),
-                website=deal.get("website", ""),
-                twitter=deal.get("twitter", "")
+        deal = _deals_cache[idx]
+        await query.message.reply_text("Đang tải nội dung từ nguồn chính thức, chờ một chút...")
+
+        raw_content = await fetch_project_page_content(
+            website=deal.get("website", ""),
+            twitter=deal.get("twitter", ""),
+            name=deal.get("name", "")
+        )
+
+        analysis = format_analysis_text(deal, raw_content)
+
+        # Chia nhỏ nếu dài
+        chunk_size = 4000
+        for i in range(0, len(analysis), chunk_size):
+            await query.message.reply_text(
+                analysis[i:i+chunk_size],
+                disable_web_page_preview=True
             )
-
-            analysis = format_analysis_response(deal, raw_text)
-
-            # Split if too long
-            chunk_size = 4000
-            for i in range(0, len(analysis), chunk_size):
-                await query.message.reply_text(
-                    analysis[i:i+chunk_size],
-                    disable_web_page_preview=True
-                )
 
     except Exception as e:
         logger.error(f"Button callback error: {e}", exc_info=True)
-        await query.message.reply_text(f"Loi: {str(e)}")
+        await query.message.reply_text(f"Lỗi: {str(e)}")
 
 
 async def scheduled_job(bot):
@@ -128,12 +130,12 @@ async def post_init(application: Application):
     scheduler.add_job(scheduled_job, "cron", hour=8, minute=0, args=[application.bot])
     scheduler.add_job(scheduled_job, "cron", hour=20, minute=0, args=[application.bot])
     scheduler.start()
-    logger.info("Scheduler started: 08:00 and 20:00 GMT+7")
+    logger.info("Scheduler: 08:00 và 20:00 GMT+7")
 
 
 def main():
     if not BOT_TOKEN or not CHAT_ID:
-        raise ValueError("Thieu BOT_TOKEN hoac CHAT_ID!")
+        raise ValueError("Thiếu BOT_TOKEN hoặc CHAT_ID!")
 
     app = (
         Application.builder()
