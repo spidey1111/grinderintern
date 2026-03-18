@@ -6,14 +6,12 @@ TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 TIER1_VCS = [
     "a16z", "andreessen horowitz", "paradigm", "sequoia", "binance labs",
     "coinbase ventures", "polychain", "multicoin", "pantera", "dragonfly",
-    "framework ventures", "electric capital", "lightspeed", "tiger global",
-    "softbank", "delphi digital"
+    "framework ventures", "electric capital", "lightspeed"
 ]
 TIER2_VCS = [
     "animoca", "spartan", "jump", "wintermute", "galaxy", "hashkey",
     "okx ventures", "huobi ventures", "kucoin ventures", "mechanism",
-    "nascent", "variant", "1kx", "fabric ventures", "outlier ventures",
-    "blockchain capital", "dcg", "amber group", "sevenx"
+    "1kx", "blockchain capital", "dcg", "amber group", "sevenx"
 ]
 
 
@@ -27,23 +25,20 @@ def assess_farm_priority(deal: dict) -> str:
     has_no_token = not token_status or token_status in ["", "none", "null"]
     if is_early and has_no_token:
         score += 4
-
     for vc in TIER1_VCS:
         if vc in investors:
             score += 3
+            break
     for vc in TIER2_VCS:
         if vc in investors:
             score += 1
-    score = min(score, 9)
+            break
 
-    amount_str = str(deal.get("amount", "")).lower().replace("$", "").replace(",", "")
     try:
-        if "m" in amount_str:
-            amt = float(amount_str.replace("m", "").strip())
-            if amt >= 20:
-                score += 2
-            elif amt >= 5:
-                score += 1
+        amt_str = str(deal.get("amount", "")).lower().replace("$", "").replace(",", "")
+        if "m" in amt_str:
+            amt = float(amt_str.replace("m", "").strip())
+            score += 2 if amt >= 20 else (1 if amt >= 5 else 0)
     except Exception:
         pass
 
@@ -57,46 +52,41 @@ def assess_farm_priority(deal: dict) -> str:
 
 def format_links(deal: dict) -> str:
     parts = []
-    website = deal.get("website", "")
-    twitter = deal.get("twitter", "")
-    discord = deal.get("discord", "")
-    if website:
-        parts.append(f"[Website]({website})")
-    if twitter:
-        tw = twitter if twitter.startswith("http") else f"https://x.com/{twitter.lstrip('@')}"
+    if deal.get("website"):
+        parts.append(f"[Website]({deal['website']})")
+    if deal.get("twitter"):
+        tw = deal["twitter"]
+        if not tw.startswith("http"):
+            tw = f"https://x.com/{tw.lstrip('@')}"
         parts.append(f"[X]({tw})")
-    if discord:
-        parts.append(f"[Discord]({discord})")
-    return " | ".join(parts) if parts else ""
+    if deal.get("discord"):
+        parts.append(f"[Discord]({deal['discord']})")
+    return " | ".join(parts)
 
 
 def format_single_deal(i: int, deal: dict) -> str:
     name = deal.get("name", "N/A")
-    amount = deal.get("amount", "N/A")
+    amount = deal.get("amount", "Chưa công bố")
     round_type = deal.get("round", "N/A")
-    investors = deal.get("investors", "N/A")
+    investors = deal.get("investors", "Chưa công bố")
     date = deal.get("date", "")
     sector = deal.get("sector", "N/A")
     description = deal.get("description", "")
-    priority = assess_farm_priority(deal)
     links = format_links(deal)
 
     lines = [
-        f"───────────────────",
+        "───────────────────",
         f"*{i}. {name}*",
     ]
     if links:
         lines.append(links)
-    lines += [
-        f"",
-        f"Goi von: {amount} | {round_type} | {date}",
-        f"Quy dau tu: {investors}",
-        f"Sector: {sector}",
-        f"Farm priority: {priority}",
-    ]
+    lines.append("")
+    lines.append(f"Gọi vốn: {amount} | {round_type} | {date}")
+    lines.append(f"Quỹ đầu tư: {investors}")
+    lines.append(f"Lĩnh vực: {sector}")
     if description:
-        lines += [f"", f"Mo ta: {description[:300]}{'...' if len(description) > 300 else ''}"]
-
+        desc = description[:300] + ("..." if len(description) > 300 else "")
+        lines += ["", f"Mô tả: {desc}"]
     return "\n".join(lines)
 
 
@@ -109,40 +99,22 @@ def format_single_deal_text(i: int, deal: dict) -> str:
     return format_single_deal(i, deal)
 
 
-def format_analysis_response(deal: dict, raw_text: str) -> str:
-    """Format phần phân tích chi tiết từ raw text đã fetch"""
+def format_analysis_text(deal: dict, raw_content: str) -> str:
     name = deal.get("name", "N/A")
-    if not raw_text:
-        return f"Khong tim thay thong tin chinh thuc cho {name}. Vui long check website/X cua du an."
+    if not raw_content or not raw_content.strip():
+        return (
+            f"Phân tích chi tiết — {name}\n"
+            f"───────────────────\n\n"
+            f"Không tìm thấy nội dung từ website/X chính thức của dự án.\n"
+            f"Vui lòng truy cập trực tiếp:\n"
+            + (f"Website: {deal.get('website')}\n" if deal.get("website") else "")
+            + (f"X: {deal.get('twitter')}\n" if deal.get("twitter") else "")
+        )
 
-    # Tóm tắt thông tin có sẵn thành phân tích
     lines = [
-        f"PHAN TICH CHI TIET — {name}",
-        f"───────────────────",
-        f"",
-        f"Nguon: thong tin chinh thuc tu website + X cua du an",
-        f"",
+        f"Phân tích chi tiết — {name}",
+        "───────────────────",
+        "",
+        raw_content.strip()
     ]
-
-    # Extract meaningful content from raw text
-    website_content = ""
-    twitter_content = ""
-
-    if "[Website" in raw_text:
-        parts = raw_text.split("[Twitter")
-        website_content = parts[0].replace("[Website", "").strip()
-        if len(parts) > 1:
-            twitter_content = parts[1].strip()
-    else:
-        website_content = raw_text
-
-    if website_content:
-        # Clean up and take first meaningful chunk
-        clean = " ".join(website_content.split())[:1500]
-        lines += [f"Tu website chinh thuc:", f"{clean}", f""]
-
-    if twitter_content:
-        clean_tw = " ".join(twitter_content.split())[:500]
-        lines += [f"Tu X (Twitter):", f"{clean_tw}", f""]
-
     return "\n".join(lines)
