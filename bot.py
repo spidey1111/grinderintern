@@ -126,11 +126,12 @@ async def scheduled_job(bot):
 
 
 async def post_init(application: Application):
-    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-    scheduler.add_job(scheduled_job, "cron", hour=8, minute=0, args=[application.bot])
-    scheduler.add_job(scheduled_job, "cron", hour=20, minute=0, args=[application.bot])
-    scheduler.start()
-    logger.info("Scheduler: 08:00 và 20:00 GMT+7")
+    # Scheduler tạm tắt — bật lại bằng cách uncomment 4 dòng dưới
+    # scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+    # scheduler.add_job(scheduled_job, "cron", hour=8, minute=0, args=[application.bot])
+    # scheduler.add_job(scheduled_job, "cron", hour=20, minute=0, args=[application.bot])
+    # scheduler.start()
+    logger.info("Scheduler đang tắt. Dùng /funding để fetch thủ công.")
 
 
 def main():
